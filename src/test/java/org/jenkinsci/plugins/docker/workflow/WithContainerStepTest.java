@@ -260,6 +260,42 @@ public class WithContainerStepTest {
         });
     }
 
+    @Test public void withInitAndExecAsUser() throws Exception {
+        story.addStep(new Statement() {
+            @Override
+            public void evaluate() throws Throwable {
+                DockerTestUtil.assumeDocker();
+                WorkflowJob p = story.j.jenkins.createProject(WorkflowJob.class, "prj");
+                p.setDefinition(new CpsFlowDefinition(
+                    "node {" +
+                        "  withDockerContainer(args: '-e BUILDER_UID=1000 -e BUILDER_GID=1000 -e BUILDER_USER=jenkins -e BUILDER_GROUP=jenkins -e HOME=/home/jenkins', image: 'dockcross/manylinux-x64') {" +
+                        "    sh 'id'\n" +
+                        "  }" +
+                        "}", true));
+                WorkflowRun b = story.j.assertBuildStatus(Result.FAILURE, p.scheduleBuild2(0));
+            }
+        });
+    }
+
+    @Test public void withInitAsRootAndExecAsUser() throws Exception {
+        story.addStep(new Statement() {
+            @Override
+            public void evaluate() throws Throwable {
+                DockerTestUtil.assumeDocker();
+                WorkflowJob p = story.j.jenkins.createProject(WorkflowJob.class, "prj");
+                p.setDefinition(new CpsFlowDefinition(
+                    "node {\n" +
+                        "  withDockerContainer(args: '--user root:root -e BUILDER_UID=1000 -e BUILDER_GID=1000 -e BUILDER_USER=jenkins -e BUILDER_GROUP=jenkins -e HOME=/home/jenkins', image: 'dockcross/manylinux-x64') {\n" +
+                        "    sh 'id'\n" +
+                        "  }\n" +
+                        "}\n", true));
+                WorkflowRun b = story.j.assertBuildStatusSuccess(p.scheduleBuild2(0).get());
+                story.j.assertLogContains("uid=1000", b);
+            }
+        });
+    }
+
+
     @Issue("JENKINS-27152")
     @Test public void configFile() throws Exception {
         story.addStep(new Statement() {

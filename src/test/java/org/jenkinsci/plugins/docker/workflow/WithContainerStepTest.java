@@ -117,6 +117,25 @@ public class WithContainerStepTest {
         });
     }
 
+    @Test public void withEnv() {
+        story.addStep(new Statement() {
+            @Override public void evaluate() throws Throwable {
+                DockerTestUtil.assumeDocker();
+                WorkflowJob p = story.j.jenkins.createProject(WorkflowJob.class, "prj");
+                p.setDefinition(new CpsFlowDefinition(
+                    "node {\n" +
+                        "  withDockerContainer('httpd:2.4.12') {\n" +
+                        "    withEnv([\"PATH+TEST=/opt/test/bin\"]) {\n" +
+                        "      sh 'echo \\${PATH}'\n" +
+                        "    }\n" +
+                        "  }\n" +
+                        "}", true));
+                WorkflowRun b = story.j.assertBuildStatusSuccess(p.scheduleBuild2(0));
+                story.j.assertLogContains("/opt/test/bin", b);
+            }
+        });
+    }
+
     @Issue("JENKINS-37719")
     @Test public void hungDaemon() {
         story.addStep(new Statement() {
@@ -435,16 +454,12 @@ public class WithContainerStepTest {
                     "    removeInvalidEnvVarsStep([]) \n" + //without envVars to overwrite
                     "    removeInvalidEnvVarsStep([\"other=only_valid_value\"]) \n" + //only valid envVar
                     "    removeInvalidEnvVarsStep([\"=\", \"other=with_empty_var\"]) \n" + //with empty variable
-                    "    removeInvalidEnvVarsStep([\"PATH=ignored_value\", \"other=with_path\"]) \n" + //with PATH variable
-                    "    removeInvalidEnvVarsStep([\"=\", \"PATH=ignored_value\", \"other=with_path_and_empty\"]) \n" + //both invalid variables
                     "  }\n" +
                     "}", true));
             WorkflowRun b = story.j.assertBuildStatusSuccess(p.scheduleBuild2(0));
             story.j.assertLogContains("working with empty environment.", b);
             story.j.assertLogContains("only_valid_value", b);
             story.j.assertLogContains("with_empty_var", b);
-            story.j.assertLogContains("with_path", b);
-            story.j.assertLogContains("with_path_and_empty", b);
             story.j.assertLogNotContains("ignored_value", b);
         });
     }

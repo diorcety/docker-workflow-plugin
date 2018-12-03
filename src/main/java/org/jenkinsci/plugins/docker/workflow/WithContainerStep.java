@@ -44,6 +44,8 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -110,6 +112,59 @@ public class WithContainerStep extends AbstractStepImpl {
         new DockerClient(launcher, node, toolName).stop(launcherEnv, container);
     }
 
+    private static EnvVars createEnvVars(String env) {
+        return createEnvVars(env.split(System.lineSeparator()));
+    }
+
+    private static EnvVars createEnvVars(String env[]) {
+        EnvVars envVars = new EnvVars();
+        for (String s : env) {
+            String[] split = s.split("=");
+            if (split.length != 2) {
+                continue;
+            }
+            envVars.put(split[0].trim(), split[1].trim());
+        }
+        return envVars;
+    }
+
+    private static EnvVars merge(EnvVars base, EnvVars modified, EnvVars target) {
+        EnvVars newEnv = new EnvVars();
+        for (String s : modified.keySet()) {
+            // Removed key
+            if (!base.containsKey(s)) {
+                newEnv.put(s, modified.get(s));
+                continue;
+            }
+
+            // Same key
+            String baseValue = base.get(s);
+            String modifiedValue = modified.get(s);
+            if (baseValue.equals(modifiedValue)) {
+                continue;
+            }
+
+            // Modified key
+            int indexOf = modifiedValue.indexOf(baseValue);
+            if (indexOf > -1) {
+                // Prepended or Appended
+                String originalValue = "";
+                if (target != null && target.containsKey(s)) {
+                    originalValue = target.get(s);
+                }
+                String newValue = modifiedValue.substring(0, indexOf);
+                newValue += originalValue;
+                newValue += modifiedValue.substring(indexOf + baseValue.length());
+                newEnv.put(s,  newValue);
+            } else {
+                // New one
+                newEnv.put(s, modifiedValue);
+            }
+        }
+
+        return newEnv;
+    }
+
     // TODO switch to GeneralNonBlockingStepExecution
     public static class Execution extends AbstractStepExecutionImpl {
         private static final long serialVersionUID = 1;
@@ -131,11 +186,8 @@ public class WithContainerStep extends AbstractStepImpl {
         @Override public boolean start() throws Exception {
             EnvVars envReduced = new EnvVars(env);
             EnvVars envHost = computer.getEnvironment();
-            envReduced.entrySet().removeAll(envHost.entrySet());
 
-            // Remove PATH during cat.
-            envReduced.remove("PATH");
-            envReduced.remove("");
+            envReduced = merge(envHost, envReduced, null);
 
             LOGGER.log(Level.FINE, "reduced environment: {0}", envReduced);
             workspace.mkdirs(); // otherwise it may be owned by root when created for -v
@@ -197,7 +249,8 @@ public class WithContainerStep extends AbstractStepImpl {
 
             final String userId = dockerClient.whoAmI();
             String command = launcher.isUnix() ? "cat" : "cmd.exe";
-            container = dockerClient.run(env, step.image, step.args, ws, volumes, volumesFromContainers, envReduced, userId, /* expected to hang until killed */ command);
+            EnvVars envDocker = createEnvVars(dockerClient.run(env, step.image, step.args, ws, volumes, volumesFromContainers, envReduced, userId, false, "env"));
+            container = dockerClient.run(env, step.image, step.args, ws, volumes, volumesFromContainers, envReduced, userId, true, /* expected to hang until killed */ command);
             final List<String> ps = dockerClient.listProcess(env, container);
             if (!ps.contains(command)) {
                 listener.error(
@@ -209,7 +262,7 @@ public class WithContainerStep extends AbstractStepImpl {
 
             ImageAction.add(step.image, run);
             getContext().newBodyInvoker().
-                    withContext(BodyInvoker.mergeLauncherDecorators(getContext().get(LauncherDecorator.class), new Decorator(container, envHost, ws, userId, toolName, dockerVersion))).
+                    withContext(BodyInvoker.mergeLauncherDecorators(getContext().get(LauncherDecorator.class), new Decorator(container, envHost, envDocker, ws, userId, toolName, dockerVersion))).
                     withCallback(new Callback(container, toolName)).
                     start();
             return false;
@@ -242,16 +295,18 @@ public class WithContainerStep extends AbstractStepImpl {
 
         private static final long serialVersionUID = 1;
         private final String container;
-        private final String[] envHost;
+        private final EnvVars envHost;
+        private final EnvVars envDocker;
         private final String ws;
         private final String user;
         private final @CheckForNull String toolName;
         private final boolean hasEnv;
         private final boolean hasWorkdir;
 
-        Decorator(String container, EnvVars envHost, String ws, String user, String toolName, VersionNumber dockerVersion) {
+        Decorator(String container, EnvVars envHost, EnvVars envDocker, String ws, String user, String toolName, VersionNumber dockerVersion) {
             this.container = container;
-            this.envHost = Util.mapToEnv(envHost);
+            this.envHost = envHost;
+            this.envDocker = envDocker;
             this.ws = ws;
             this.toolName = toolName;
             this.hasEnv = dockerVersion != null && dockerVersion.compareTo(new VersionNumber("1.13.0")) >= 0;
@@ -294,17 +349,9 @@ public class WithContainerStep extends AbstractStepImpl {
                             }
                         }
                     } // otherwise we are loading an old serialized Decorator
-                    Set<String> envReduced = new TreeSet<String>(Arrays.asList(starter.envs()));
-                    envReduced.removeAll(Arrays.asList(envHost));
+                    EnvVars launchEnv = merge(envHost, createEnvVars(starter.envs()), envDocker);
+                    Set<String> envReduced = new TreeSet<String>(Arrays.asList(Util.mapToEnv(launchEnv)));
 
-                    // Remove PATH or invalid variable during `exec` as well.
-                    Iterator<String> it = envReduced.iterator();
-                    while (it.hasNext()) {
-                        final String envVar = it.next();
-                        if (envVar.startsWith("PATH=") || "=".equals(envVar.trim())) {
-                            it.remove();
-                        }
-                    }
                     LOGGER.log(Level.FINE, "(exec) reduced environment: {0}", envReduced);
                     if (hasEnv) {
                         for (String e : envReduced) {
@@ -377,7 +424,7 @@ public class WithContainerStep extends AbstractStepImpl {
                 }
                 private String getExecutable() throws IOException, InterruptedException {
                     EnvVars env = new EnvVars();
-                    for (String pair : envHost) {
+                    for (String pair : Util.mapToEnv(envHost)) {
                         env.addLine(pair);
                     }
                     return DockerTool.getExecutable(toolName, node, getListener(), env);

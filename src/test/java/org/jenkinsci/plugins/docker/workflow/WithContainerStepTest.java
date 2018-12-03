@@ -116,6 +116,25 @@ public class WithContainerStepTest {
         });
     }
 
+    @Test public void withEnv() {
+        story.addStep(new Statement() {
+            @Override public void evaluate() throws Throwable {
+                DockerTestUtil.assumeDocker();
+                WorkflowJob p = story.j.jenkins.createProject(WorkflowJob.class, "prj");
+                p.setDefinition(new CpsFlowDefinition(
+                    "node {\n" +
+                        "  withDockerContainer('httpd:2.4.12') {\n" +
+                        "    withEnv([\"PATH+TEST=/opt/test/bin\"]) {\n" +
+                        "      sh 'echo \\${PATH}'\n" +
+                        "    }\n" +
+                        "  }\n" +
+                        "}", true));
+                WorkflowRun b = story.j.assertBuildStatusSuccess(p.scheduleBuild2(0));
+                story.j.assertLogContains("/opt/test/bin", b);
+            }
+        });
+    }
+
     @Issue("JENKINS-37719")
     @Test public void hungDaemon() {
         story.addStep(new Statement() {

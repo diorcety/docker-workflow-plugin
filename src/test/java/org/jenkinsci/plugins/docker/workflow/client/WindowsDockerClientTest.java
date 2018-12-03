@@ -39,6 +39,7 @@ public class WindowsDockerClientTest {
             Collections.emptyList(),
             new EnvVars(),
             dockerClient.whoAmI(),
+            true,
             "cat");
 
         Assert.assertEquals(64, containerId.length());

@@ -81,6 +81,7 @@ public class WithContainerStep extends AbstractStepImpl {
     private static final Logger LOGGER = Logger.getLogger(WithContainerStep.class.getName());
     private final @Nonnull String image;
     private String args;
+    private String entrypoint;
     private String toolName;
 
     @DataBoundConstructor public WithContainerStep(@Nonnull String image) {
@@ -98,6 +99,15 @@ public class WithContainerStep extends AbstractStepImpl {
 
     public String getArgs() {
         return args;
+    }
+
+    public String getEntrypoint() {
+        return entrypoint;
+    }
+
+    @DataBoundSetter
+    public void setEntrypoint(String entrypoint) {
+        this.entrypoint = entrypoint;
     }
 
     public String getToolName() {
@@ -251,8 +261,12 @@ public class WithContainerStep extends AbstractStepImpl {
 
             final String userId = dockerClient.whoAmI();
             String command = launcher.isUnix() ? "cat" : "cmd.exe";
-            EnvVars envDocker = createEnvVars(dockerClient.run(env, step.image, step.args, ws, volumes, volumesFromContainers, envReduced, userId, false, "env"));
-            container = dockerClient.run(env, step.image, step.args, ws, volumes, volumesFromContainers, envReduced, userId, true, /* expected to hang until killed */ command);
+            String args = step.args;
+            if (step.entrypoint != null) {
+                args += " --entrypoint='" + step.entrypoint +  "'";
+            }
+            EnvVars envDocker = createEnvVars(dockerClient.run(env, step.image, args, ws, volumes, volumesFromContainers, envReduced, userId, false, "env"));
+            container = dockerClient.run(env, step.image, args, ws, volumes, volumesFromContainers, envReduced, userId, true, /* expected to hang until killed */ command);
             final List<String> ps = dockerClient.listProcess(env, container);
             if (!ps.contains(command)) {
                 listener.error(
@@ -264,7 +278,7 @@ public class WithContainerStep extends AbstractStepImpl {
 
             ImageAction.add(step.image, run);
             getContext().newBodyInvoker().
-                    withContext(BodyInvoker.mergeLauncherDecorators(getContext().get(LauncherDecorator.class), new Decorator(container, envHost, envDocker, ws, userId, toolName, dockerVersion))).
+                    withContext(BodyInvoker.mergeLauncherDecorators(getContext().get(LauncherDecorator.class), new Decorator(container, envHost, envDocker, ws, userId, step.entrypoint, toolName, dockerVersion))).
                     withCallback(new Callback(container, toolName)).
                     start();
             return false;
@@ -301,11 +315,12 @@ public class WithContainerStep extends AbstractStepImpl {
         private final EnvVars envDocker;
         private final String ws;
         private final String user;
+        private final String entrypoint;
         private final @CheckForNull String toolName;
         private final boolean hasEnv;
         private final boolean hasWorkdir;
 
-        Decorator(String container, EnvVars envHost, EnvVars envDocker, String ws, String user, String toolName, VersionNumber dockerVersion) {
+        Decorator(String container, EnvVars envHost, EnvVars envDocker, String ws, String user, String entrypoint, String toolName, VersionNumber dockerVersion) {
             this.container = container;
             this.envHost = envHost;
             this.envDocker = envDocker;
@@ -314,6 +329,7 @@ public class WithContainerStep extends AbstractStepImpl {
             this.hasEnv = dockerVersion != null && dockerVersion.compareTo(new VersionNumber("1.13.0")) >= 0;
             this.hasWorkdir = dockerVersion != null && dockerVersion.compareTo(new VersionNumber("17.12")) >= 0;
             this.user = user;
+            this.entrypoint = entrypoint;
         }
 
         @Override public Launcher decorate(final Launcher launcher, final Node node) {
@@ -328,7 +344,7 @@ public class WithContainerStep extends AbstractStepImpl {
                     
                     List<String> prefix = new ArrayList<>(Arrays.asList(executable, "exec"));
                     List<Boolean> masksPrefixList = new ArrayList<>(Arrays.asList(false, false));
-                    if (user != null) {
+                    if (user != null && entrypoint == null) {
                         prefix.add("-u");
                         masksPrefixList.add(false);
                         prefix.add(user);
@@ -381,6 +397,12 @@ public class WithContainerStep extends AbstractStepImpl {
                         masksPrefixList.addAll(envReduced.stream()
                                                          .map(v -> true)
                                                          .collect(Collectors.toList()));
+                    }
+
+                    // Add entrypoint
+                    if (entrypoint != null) {
+                        prefix.add(entrypoint);
+                        masksPrefixList.add(false);
                     }
 
                     boolean[] originalMasks = starter.masks();
